@@ -1,0 +1,29 @@
+;
+; i2s.pio — PIO I2S 发送器（每声道 32bit 槽位，数据左对齐高 16bit）
+;
+; 改编自 Raspberry Pi pico-extras 的 audio_i2s.pio（BSD-3-Clause，
+; Copyright 2020 Raspberry Pi (Trading) Ltd.），把每声道 16bit 扩成 32bit。
+;
+; side-set 两个相邻引脚：base=BCLK、base+1=LRCLK；另有一个 OUT 引脚输出数据。
+; 自动 pull 阈值 32、MSB 在前（shift to left）。每个 FIFO 32bit 字 = 一个声道
+; 的 32bit 槽位（有效数据在高 16bit，低 16bit 补 0）：
+;   LRCLK=1 阶段送一个字，LRCLK=0 阶段送下一个字；单声道时两个字相同。
+; 每个完整帧（64 个数据位，BCLK = 64×fs）共 128 个 PIO 周期。
+;
+.program i2s
+.side_set 2
+
+                    ;        /--- LRCLK
+                    ;        |/-- BCLK
+bitloop1:           ;        ||
+    out pins, 1       side 0b10
+    jmp x-- bitloop1  side 0b11
+    out pins, 1       side 0b00
+    set x, 30         side 0b01
+
+bitloop0:
+    out pins, 1       side 0b00
+    jmp x-- bitloop0  side 0b01
+    out pins, 1       side 0b10
+public entry_point:
+    set x, 30         side 0b11
