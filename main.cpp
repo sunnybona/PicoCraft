@@ -13,8 +13,13 @@ using namespace picosystem;
 #include "voxel/voxel_ray.h"
 #include "voxel/player_physics.h"
 #include "voxel/save_store.h"
+#ifdef PICOCRAFT_AUDIO_PWM
+#include "voxel/audio_pwm.h"
+#else
 #include "voxel/audio_i2s.h"
+#endif
 #include "voxel/block_textures.h"
+#include "voxel/terrain_skyline.h"
 #include "voxel/entities.h"
 
 // ---------------- 世界与玩家参数 ----------------
@@ -51,18 +56,11 @@ static int pick_swing = 0;          // 挥动剩余帧数，0 = 静止
 // ---------------- 音频后端选择：PWM（picosystem 内置）或 I2S（默认） ----------------
 // 编译开关 PICOCRAFT_AUDIO_PWM 选择 PWM；否则用 I2S。SfxSpec 仅作参数容器，两种后端通用。
 #ifdef PICOCRAFT_AUDIO_PWM
-  // PWM 后端：picosystem main 已无条件启动 1ms PWM 回调，这里无需 init/pump，
-  // 触发时把 SfxSpec 字段映射到 picosystem 的 voice/play（AUDIO pin 11）。
-  static inline void game_audio_init() {}
-  static inline void game_audio_pump() {}
-  static inline void game_audio_trigger(const SfxSpec &s) {
-      voice_t v = voice(s.attack_ms, s.decay_ms, (uint32_t)s.sustain, s.release_ms,
-                        s.bend, s.bend_ms,
-                        0u,                 // reverb
-                        (uint32_t)s.noise,
-                        0u);                // distort
-      play(v, s.freq, s.duration_ms, (uint32_t)s.volume);
-  }
+  // PWM 后端：galagino 风格固定高载波 PCM（audio_pwm.cpp，GPIO11），
+  // 全有或全无块写入、显式静音、空闲彻底停硬件，替代 picosystem 蜂鸣器。
+  static inline void game_audio_init() { pwm_audio_init(); }
+  static inline void game_audio_pump() { pwm_audio_pump(); }
+  static inline void game_audio_trigger(const SfxSpec &s) { pwm_audio_trigger(s); }
 #else
   // I2S 后端：PIO + 外部 DAC（pin 13/14/15）
   static inline void game_audio_init() { i2s_audio_init(); }
@@ -464,6 +462,9 @@ void draw(uint32_t tick) {
 
     // 选中方块高亮
     draw_highlight();
+
+    // 远景天际线：远山轮廓 + 水面（只填天空区，被近处体素遮挡）
+    render_terrain_skyline(WORLD_SEED);
 
     // 手持方块 HUD
     draw_hotbar();

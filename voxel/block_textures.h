@@ -16,6 +16,7 @@
 // 纹理槽位（对应不同方块/面）
 enum BlockTex : uint8_t {
     TEX_GRASS_TOP = 0,          // 草地顶面（带花朵）
+    TEX_GRASS_TOP_PLAIN,        // 草地顶面（无花）
     TEX_GRASS_SIDE,             // 草地侧面（草边+泥土）
     TEX_DIRT,
     TEX_STONE,
@@ -38,5 +39,8 @@ void init_block_textures();
 
 // 某方块、某面（法线 0..5 对应 FACES 顺序）的纹理槽位
 uint8_t block_texture_id(uint8_t block, int face);
+
+// 草顶面纹理：按世界坐标成片决定带花（TEX_GRASS_TOP）或无花（TEX_GRASS_TOP_PLAIN）
+uint8_t grass_top_texture_id(int wx, int wz);
 
 #endif

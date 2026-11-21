@@ -14,6 +14,9 @@
 #define RING_WORDS    (RING_SAMPLES * 2u)   // 4096 word = 16KB，约 46ms 缓冲
 #define RING_MASK     (RING_WORDS - 1u)
 #define MARGIN_WORDS  32u            // 离读指针保留的安全距离（word）
+// 静音关断阈值：无音效且 DMA 待消费数据降到该 word 数以内时，停止 PIO/DMA。
+// 取 64 word（32 样本，约 0.7ms），在 DMA 追上写指针前提前干净关断，避免欠载。
+#define SHUTDOWN_WORDS 64u
 // 启动/欠载重同步时的预载量（3/4 环静音提前量），吸收游戏低帧率下的帧抖动，
 // 保证 DMA 不会读到上一轮音效的残留。
 #define PRELOAD_WORDS ((RING_WORDS * 3u) / 4u)
@@ -35,6 +38,8 @@ static PIO    s_pio = pio1;
 static uint   s_sm;
 static uint   s_prog_off;
 static uint   s_dma_ch;
+static bool   s_stream_on;            // PIO + DMA 是否在运行（false=硬件已关断，DAC 处于 standby）
+static bool   s_needs_boot;           // 冷启动待触发：ring 已就绪但 DMA/PIO 未启动，等 pump 填数据后启动
 
 // ---- 合成器状态 ----
 static bool     syn_active;
@@ -84,6 +89,10 @@ static const int16_t sin_tab[256] = {
 };
 
 // ---------------- 合成器 ----------------
+// 前向声明：i2s_trigger 需要唤醒流并立即填充，而这两个函数定义在本文件后部
+static void stream_start();
+void i2s_pump();
+
 static uint32_t ms_to_samps(uint32_t ms) {
     return (uint32_t)(((uint64_t)ms * SAMPLE_RATE) / 1000u);
 }
@@ -112,6 +121,12 @@ void i2s_trigger(const SfxSpec &spec) {
     syn_sus0 = dur;
     syn_total = dur + rel;
     syn_active = true;
+
+    // 若硬件已关断（静音 standby），先唤醒 PIO/DMA，再立即填充，避免音效开头延迟
+    if (!s_stream_on) {
+        stream_start();
+    }
+    i2s_pump();
 }
 
 // 生成一个单声道样本（中心 0）
@@ -160,26 +175,103 @@ static int16_t synth_sample() {
     return (int16_t)out;
 }
 
-// ---------------- DMA 环内写指针 ----------------
-// 不做跨环累计，wp 始终是环内索引（0..RING_WORDS-1），绕环自然处理，
-// 即使一帧内 DMA 绕多圈也不会累计失步。
-static uint32_t s_wp;
+// ---------------- DMA 累计读写位置 ----------------
+// 用单调递增的累计 word 计数跟踪写位置，写环时再 & RING_MASK 取环内位置。
+// 读位置直接取 DMA 硬件的绝对已传输计数：transfer_count 是“剩余”数，启动时
+// 写入 0xFFFFFFFF，故 已传输 = 初值 - 剩余。该值由硬件维护、与环内折回无关，
+// 即使两次 pump 间 DMA 转过多圈也精确，不会因漏判折回而永久错位。
+static uint32_t s_wp_total;     // 累计写入 word 数
+
+// 当前累计读位置（绝对 word 数，硬件实时值，不依赖跨调用历史）
+static uint32_t read_position() {
+    return 0xFFFFFFFFu - dma_channel_hw_addr(s_dma_ch)->transfer_count;
+}
+
+// ---------------- PIO 相位复位 / 流启停 ----------------
+// 停状态机、清 FIFO、复位 PC 并跳回 entry_point，不重跑完整 PIO 配置。
+static void sm_phase_reset() {
+    pio_sm_set_enabled(s_pio, s_sm, false);
+    pio_sm_clear_fifos(s_pio, s_sm);
+    pio_sm_restart(s_pio, s_sm);
+    pio_sm_exec(s_pio, s_sm, pio_encode_jmp(s_prog_off + i2s_offset_entry_point));
+}
+
+// 关断：abort DMA 并停 PIO。BCLK 停止翻转后，MAX98357A 自动进入 standby，
+// 关闭 Class D 功放、输出高阻，消除静音期的持续 hiss。
+static void stream_stop() {
+    if (!s_stream_on) return;
+    dma_channel_abort(s_dma_ch);
+    sm_phase_reset();
+    s_stream_on = false;
+}
+
+// 唤醒（冷启动准备）：清 ring 为静音、复位累计计数与 PIO，但先不启动 DMA/PIO，
+// 置 s_needs_boot 让接下来的 i2s_pump 从位置 0 填好真实数据后再启动，避免开头静音延迟。
+static void stream_start() {
+    if (s_stream_on) return;
+    for (uint32_t i = 0; i < RING_WORDS; i++) s_ring[i] = 0;
+    s_wp_total = 0;
+    sm_phase_reset();
+    s_stream_on = true;
+    s_needs_boot = true;
+}
 
 // ---------------- 每帧填充 ----------------
 void i2s_pump() {
-    // DMA 当前环内读索引（真实位置，0..RING_WORDS-1）
-    uint32_t ridx = ((uint32_t)dma_channel_hw_addr(s_dma_ch)->read_addr -
-                     (uint32_t)(uintptr_t)s_ring) >> 2;
+    if (!s_stream_on) return;
 
-    // 写到读指针后方、保留 MARGIN 安全距离的位置（环内前向空间）
-    int32_t space = (int32_t)(ridx - MARGIN_WORDS) - (int32_t)s_wp;
-    if (space < 0) space += RING_WORDS;
+    // 冷启动：DMA/PIO 尚未运行，先从位置 0 填满真实数据，再启动 DMA/PIO，
+    // 保证音效第一个样本即从 ring 开头播出，无静音延迟。
+    if (s_needs_boot) {
+        int32_t cap = (int32_t)RING_WORDS - (int32_t)MARGIN_WORDS;
+        int32_t n = cap / 2;
+        for (int32_t i = 0; i < n; i++) {
+            int16_t v = synth_sample();
+            uint32_t w = (uint32_t)(uint16_t)v << 16;
+            s_ring[s_wp_total & RING_MASK] = w; s_wp_total++;
+            s_ring[s_wp_total & RING_MASK] = w; s_wp_total++;
+        }
+        dma_channel_transfer_from_buffer_now(s_dma_ch, s_ring, 0xFFFFFFFFu);
+        pio_sm_set_enabled(s_pio, s_sm, true);
+        s_needs_boot = false;
+        return;
+    }
 
-    for (int32_t i = 0; i < space; i++) {
+    uint32_t rpos = read_position();
+    int32_t used = (int32_t)(s_wp_total - rpos);   // 已填充待消费 word 数
+
+    // 无活跃音效：不再生产新数据，让 DMA 消费完剩余静音后关断触发硬件 standby
+    if (!syn_active) {
+        if (used <= (int32_t)SHUTDOWN_WORDS) {
+            stream_stop();
+        }
+        return;
+    }
+
+    // 欠载：供数跟不上，DMA 已追上/绕过写指针。把 DMA 即将读到的区域
+    // 整段填静音并把写指针前拉，避免重复上一轮音效（dig 噪声）的残留。
+    if (used <= 0) {
+        uint32_t ridx = rpos & RING_MASK;
+        for (uint32_t k = 0; k < PRELOAD_WORDS; k++)
+            s_ring[(ridx + k) & RING_MASK] = 0;
+        s_wp_total = rpos + PRELOAD_WORDS;
+        used = (int32_t)PRELOAD_WORDS;
+    }
+
+    // 可写空间：环容量 - 已用 - 安全余量（word）
+    int32_t room_words = (int32_t)RING_WORDS - used - (int32_t)MARGIN_WORDS;
+    if (room_words < 2) return;
+    int32_t n_samples = room_words / 2;            // 每样本占左右两个 word
+
+    for (int32_t i = 0; i < n_samples; i++) {
         int16_t v = synth_sample();
-        uint32_t w = (uint32_t)(uint16_t)v << 16;   // 左对齐高 16 位
-        s_ring[s_wp] = w; s_wp = (s_wp + 1u) & RING_MASK;
-        s_ring[s_wp] = w; s_wp = (s_wp + 1u) & RING_MASK;
+        uint32_t w = (uint32_t)(uint16_t)v << 16;  // 左对齐高 16 位
+        uint32_t a = s_wp_total & RING_MASK;
+        s_ring[a] = w;
+        s_wp_total++;
+        uint32_t b = s_wp_total & RING_MASK;
+        s_ring[b] = w;
+        s_wp_total++;
     }
 }
 
@@ -225,11 +317,11 @@ void i2s_audio_init() {
                           &s_pio->txf[s_sm],
                           s_ring, 0, false);
 
-    s_wp = 0;
+    s_wp_total = 0;
     syn_active = false;
 
-    // 启动 DMA（极大计数，读 ring 永不停止），再启动状态机，然后填充环内静音
-    dma_channel_transfer_from_buffer_now(s_dma_ch, s_ring, 0xFFFFFFFFu);
-    pio_sm_set_enabled(s_pio, s_sm, true);
-    i2s_pump();
+    // 开机无音效：保持硬件关断（PIO 停、DMA 不启动），MAX98357A 维持 standby，
+    // 没有 BCLK 也就没有待机 hiss。首个 i2s_trigger 会经 stream_start 冷启动唤醒。
+    s_stream_on = false;
+    s_needs_boot = false;
 }

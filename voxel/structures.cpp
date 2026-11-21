@@ -1,5 +1,6 @@
 #include "structures.h"
 #include "voxel_world.h"
+#include "spawn_platform.h"
 #include <math.h>
 
 // 必须与 voxel_world.cpp 完全一致的确定性原语，保证结构与地形对齐。
@@ -68,13 +69,13 @@ static bool house_info(int wx, int wz, uint32_t seed,
     int ox = gx * HOUSE_GRID;
     int oz = gz * HOUSE_GRID;
 
-    // 出生点强制房子：玩家看向 -Z，在网格 (0,-1) 固定锚点，开局前方即可见
+    // 出生点强制房子：固定在出生平台左后半（x:-8..-3, z:-12..-7），平台已平整、
+    // 无地形遮挡，近边距玩家 7 格，开局前方即可见。
     if (gx == 0 && gz == -1) {
-        ax = 5; az = -13;
+        ax = -8; az = -12;
         int lx0 = wx - ax, lz0 = wz - az;
         if (lx0 < 0 || lx0 >= HOUSE_S || lz0 < 0 || lz0 >= HOUSE_S) return false;
-        gh = column_height(ax + HOUSE_S / 2, az + HOUSE_S / 2, seed);
-        if (gh <= SEA_LEVEL) gh = 5;             // 出生点兜底，避免落在水里
+        gh = SPAWN_PLATFORM_HIGH;                // 与平台统一高度对齐
         return true;
     }
 

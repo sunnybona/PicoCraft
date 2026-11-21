@@ -8,7 +8,7 @@ static color_t s_tex[TEX_COUNT][TEX_SIZE * TEX_SIZE];
 // 定义处加 extern：C++ 命名空间作用域 const 默认内部链接，需显式外部链接
 extern const struct texture chunk_texture_list[TEX_COUNT] = {
 #define TENTRY(I) { TEX_SIZE, 0, 0, s_tex[I] }
-    TENTRY(TEX_GRASS_TOP), TENTRY(TEX_GRASS_SIDE), TENTRY(TEX_DIRT),
+    TENTRY(TEX_GRASS_TOP), TENTRY(TEX_GRASS_TOP_PLAIN), TENTRY(TEX_GRASS_SIDE), TENTRY(TEX_DIRT),
     TENTRY(TEX_STONE), TENTRY(TEX_LOG), TENTRY(TEX_LEAVES), TENTRY(TEX_SAND),
     TENTRY(TEX_PLANK), TENTRY(TEX_WATER), TENTRY(TEX_COBBLE), TENTRY(TEX_BRICK),
     TENTRY(TEX_GLASS), TENTRY(TEX_BEDROCK), TENTRY(TEX_SNOW), TENTRY(TEX_GOLD),
@@ -177,6 +177,8 @@ void init_block_textures() {
     rng.s = 0x12345678u;
 
     gen_grass_top(s_tex[TEX_GRASS_TOP], rng);
+    // 无花草顶：同样的草色噪点底，不画花朵
+    noisy_fill(s_tex[TEX_GRASS_TOP_PLAIN], 4, 12, 4, 2, rng);
     gen_grass_side(s_tex[TEX_GRASS_SIDE], rng);
 
     noisy_fill(s_tex[TEX_DIRT], 9, 6, 3, 2, rng);
@@ -192,6 +194,33 @@ void init_block_textures() {
     noisy_fill(s_tex[TEX_BEDROCK], 3, 3, 4, 3, rng);
     noisy_fill(s_tex[TEX_SNOW], 14, 14, 15, 1, rng);
     noisy_fill(s_tex[TEX_GOLD], 15, 12, 3, 2, rng);
+}
+
+// 花朵成片网格边长（格）：每 FLOWER_GRID x FLOWER_GRID 区域统一带花/无花
+#define FLOWER_GRID 4
+// 带花区域占比（%）：仅约 40% 区域有花，其余整片无花
+#define FLOWER_AREA_PCT 40
+
+// 向下取整除法（b>0），保证负坐标下区域划分一致
+static int floor_div1(int a, int b) {
+    int q = a / b;
+    int r = a % b;
+    if (r != 0 && r < 0) q--;
+    return q;
+}
+
+static uint32_t cell_hash2(int x, int z) {
+    uint32_t h = (uint32_t)(x * 374761393) + (uint32_t)(z * 668265263) + 0x9e3779b9u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+// 草顶面纹理：按世界坐标成片决定带花/无花
+uint8_t grass_top_texture_id(int wx, int wz) {
+    int gx = floor_div1(wx, FLOWER_GRID);
+    int gz = floor_div1(wz, FLOWER_GRID);
+    return (cell_hash2(gx, gz) % 100u < FLOWER_AREA_PCT)
+           ? TEX_GRASS_TOP : TEX_GRASS_TOP_PLAIN;
 }
 
 // 面索引 0..5 对应 voxel_mesh FACES：top,bottom,+Z,-Z,+X,-X

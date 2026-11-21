@@ -20,14 +20,14 @@ static uint32_t ent_hash(int x, int z, uint32_t seed) {
     return h ^ (h >> 16);
 }
 
-// 出生点强制布局：玩家 (0,0) 周围一圈，四种动物 + 一个 NPC，初始即可见。
-// 玩家初始看向 -Z，NPC 放在正前方；其余分散在不同方向。
+// 出生点强制布局：全部放在出生平台内、玩家前方 5..9 格的扇形（偏角 ≤35°），
+// 平台已平整、无遮挡，开局看 -Z 即清晰可见；动物位于中右，房子在左后半不冲突。
 static const struct { int8_t dx, dz; uint8_t type; } spawn_layout[SPAWN_ENTITY_N] = {
-    {  0, -6, ENT_NPC},
-    { -9, -7, ENT_COW},
-    {  9, -9, ENT_SHEEP},
-    { -8,  8, ENT_CHICKEN},
-    {  9,  7, ENT_DUCK},
+    {  0, -5, ENT_NPC},
+    {  3, -6, ENT_COW},
+    {  5, -7, ENT_SHEEP},
+    { -1, -7, ENT_CHICKEN},
+    {  2, -8, ENT_DUCK},
 };
 
 // ---------------- 生命周期 ----------------

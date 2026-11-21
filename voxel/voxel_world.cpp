@@ -1,5 +1,6 @@
 #include "voxel_world.h"
 #include "structures.h"
+#include "spawn_platform.h"
 #include <math.h>
 #include <string.h>
 
@@ -118,6 +119,7 @@ void VoxelWorld::generate_chunk(Chunk &c, int cx, int cz) {
             int wx = cx * CHUNK_S + lx;
             int wz = cz * CHUNK_S + lz;
             int h = column_height(wx, wz, seed);
+            if (in_spawn_platform(wx, wz)) h = SPAWN_PLATFORM_HIGH;  // 出生平台强制平整
 
             for (int y = 0; y < CHUNK_H; y++) {
                 uint8_t b;
@@ -139,6 +141,7 @@ void VoxelWorld::generate_chunk(Chunk &c, int cx, int cz) {
         for (int lz = 2; lz <= CHUNK_S - 3; lz++) {
             int wx = cx * CHUNK_S + lx;
             int wz = cz * CHUNK_S + lz;
+            if (in_spawn_platform(wx, wz)) continue;   // 出生平台保持开阔，不种树
             int gy = column_height(wx, wz, seed);
             if (gy <= SEA_LEVEL || gy >= CHUNK_H - 6) continue;
             if (c.blocks[local_index(lx, gy, lz)] != BLK_GRASS) continue;

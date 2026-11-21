@@ -76,7 +76,10 @@ static void emit_textured_face(int bx, int by, int bz,
 
     triangle_32 t;
     t.shader_id = 100;
-    t.texture_id = block_texture_id(block, face_idx);
+    // 草顶面（face_idx==0）按世界坐标成片决定带花/无花，其余面用常规映射
+    t.texture_id = (block == BLK_GRASS && face_idx == 0)
+                   ? grass_top_texture_id(bx, bz)
+                   : block_texture_id(block, face_idx);
 
     const int idx[2][3] = { {0,1,2}, {0,2,3} };
     for (int ti = 0; ti < 2; ti++) {

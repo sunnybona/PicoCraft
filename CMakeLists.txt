@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.12)
 
 # ------------------------------------------------------------
-# 依赖目录（本机固定路径；搬迁时改这里即可）。
-# 强制使用写死的 SDK 2.3.1，忽略机器级环境变量里指向旧 SDK 1.x 的 PICO_SDK_PATH。
+# 依赖说明：
+#   - PicoSystem 库已内聚在本工程 ./picosystem（见下方 PICOSYSTEM_DIR），
+#     工程不再依赖外部 picosystem 目录，拷贝整个 PicoCraft 即可带走。
+#   - 仅 pico-sdk 工具链仍为外部依赖，默认写死 2.3.1（E:/pico-sdk-2），
+#     忽略机器级环境变量里指向旧 SDK 1.x 的 PICO_SDK_PATH；换机改这里即可。
 # ------------------------------------------------------------
 if(NOT PICO_SDK_PATH)
     set(PICO_SDK_PATH "E:/pico-sdk-2")
@@ -16,7 +19,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # 必须在 pico_sdk_init() 之前设置，否则 SDK 子作用域快照读不到，picotool 会误判 unknown 并联网。
 if(NOT PICOSYSTEM_DIR)
-    set(PICOSYSTEM_DIR "E:/picosystem" CACHE PATH "Path to PicoSystem SDK")
+    set(PICOSYSTEM_DIR "${CMAKE_CURRENT_LIST_DIR}/picosystem" CACHE PATH "Path to bundled PicoSystem library")
 endif()
 if(NOT picotool_DIR)
     set(picotool_DIR "E:/pico-tools/picotool" CACHE PATH "Path to prebuilt picotool")
@@ -27,10 +30,10 @@ pico_sdk_init()
 
 find_package(PICOSYSTEM REQUIRED)
 
-# 音频后端：PWM 用 picosystem 内置回调（不编译 I2S，省 16KB ring BSS）；默认 I2S。
-option(PICOCRAFT_AUDIO_PWM "Use picosystem PWM audio instead of I2S" OFF)
+# 音频后端：PWM 用 galagino 风格 PCM 模块（固定高载波 + DMA 环形，不编译 I2S）；默认 I2S。
+option(PICOCRAFT_AUDIO_PWM "Use PWM PCM audio instead of I2S" OFF)
 if(PICOCRAFT_AUDIO_PWM)
-    set(PICOCRAFT_AUDIO_SOURCES)            # 空：PWM 不需要额外源
+    set(PICOCRAFT_AUDIO_SOURCES voxel/audio_pwm.cpp)
 else()
     set(PICOCRAFT_AUDIO_SOURCES voxel/audio_i2s.cpp)
 endif()
@@ -53,6 +56,7 @@ picosystem_executable(
     voxel/save_store.cpp
     ${PICOCRAFT_AUDIO_SOURCES}
     voxel/block_textures.cpp
+    voxel/terrain_skyline.cpp
     voxel/structures.cpp
     voxel/entities.cpp
 )
@@ -77,9 +81,9 @@ if(PICOCRAFT_SYSCLK_KHZ)
     target_compile_definitions(picocraft PUBLIC PICOCRAFT_SYSCLK_KHZ=${PICOCRAFT_SYSCLK_KHZ})
 endif()
 
-# PWM 音频后端编译开关
+# PWM 音频后端编译开关；PICOCRAFT_PWM_PCM 让 picosystem 旁路蜂鸣器（INTERFACE 源随本 target 编译）
 if(PICOCRAFT_AUDIO_PWM)
-    target_compile_definitions(picocraft PUBLIC PICOCRAFT_AUDIO_PWM)
+    target_compile_definitions(picocraft PUBLIC PICOCRAFT_AUDIO_PWM PICOCRAFT_PWM_PCM)
 endif()
 
 # ---------------- 版本标记：输出文件名带平台/频率/纹理，便于区分各固件 ----------------
