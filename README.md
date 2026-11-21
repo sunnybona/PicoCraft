@@ -1,5 +1,7 @@
 # PicoCraft
 
+[English](README.en.md) | 简体中文
+
 一个跑在 **Raspberry Pi RP2040 / RP2350 裸机**上的第一人称体素沙盒游戏（Minecraft 风格）。
 不依赖 PSRAM，全部内容（世界、纹理、帧缓冲、合成器）驻留片上 SRAM；双核分工，
 Core0 跑游戏逻辑、Core1 跑软件 3D 光栅化，输出到 ST7789 SPI LCD。
